@@ -70,7 +70,15 @@ class _WebViewScreenState extends State<WebViewScreen> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         foregroundColor: AppColors.ink,
-        title: Text(widget.args.title, style: jesterTextStyle(size: 20, color: AppColors.ink)),
+        title: Text(
+          widget.args.title,
+          style: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+            color: AppColors.ink,
+            shadows: [],
+          ),
+        ),
         centerTitle: true,
         elevation: 0.5,
       ),
