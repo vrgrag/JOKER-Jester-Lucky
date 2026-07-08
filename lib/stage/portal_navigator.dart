@@ -96,7 +96,19 @@ class _PortalNavigatorState extends State<PortalNavigator>
     await widget.beacon.prime();
     _bumpProgress(0.22);
 
-    switch (widget.depot.readPortalKind()) {
+    PortalKind kind = widget.depot.readPortalKind();
+
+    // If the device previously landed in native mode due to a transient
+    // gateway failure (not because the endpoint was empty), reset to
+    // pending so we retry the full pipeline — unless the endpoint is
+    // still empty (genuine white-only build).
+    if (kind == PortalKind.native &&
+        JesterManifest.gatewayEndpoint.isNotEmpty) {
+      await widget.depot.writePortalKind(PortalKind.pending);
+      kind = PortalKind.pending;
+    }
+
+    switch (kind) {
       case PortalKind.native:
         await _openGame(initialLift: 0.4);
         break;
@@ -139,7 +151,13 @@ class _PortalNavigatorState extends State<PortalNavigator>
       await _settle();
       _routeToGray(verdict.destination!);
     } else {
-      await widget.depot.writePortalKind(PortalKind.native);
+      // Do NOT write PortalKind.native here — a gateway timeout, HTTP
+      // error or a transient server rejection would permanently lock the
+      // user into the game. Keep the state as `pending` so the full
+      // pipeline is retried on the next launch.
+      //
+      // PortalKind.native is only written above when the gateway endpoint
+      // is empty (pre-launch, no credentials — white-part review mode).
       await _openGame(initialLift: 0.86);
     }
   }
