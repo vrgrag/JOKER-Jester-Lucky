@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -60,17 +59,6 @@ class _PortalNavigatorState extends State<PortalNavigator>
   double _progress = 0.05;
   bool _committed = false;
   late final AnimationController _dots;
-  final List<String> _diagLog = <String>[];
-
-  void _stamp(String line) {
-    // ignore: avoid_print
-    debugPrint('[Jester][Portal] $line');
-    if (!mounted) return;
-    setState(() {
-      _diagLog.add(line);
-      if (_diagLog.length > 8) _diagLog.removeAt(0);
-    });
-  }
 
   @override
   void initState() {
@@ -80,12 +68,8 @@ class _PortalNavigatorState extends State<PortalNavigator>
       duration: const Duration(milliseconds: 1400),
     )..repeat();
     widget.beacon.onTokenRotated = _rebroadcastToken;
-    // Gray splash screens are portrait-only. ReaderStage unlocks all
-    // orientations when it opens; the game locks back to portrait itself.
-    SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-    ]);
+    // Re-assert immersive mode each time this screen builds — covers the
+    // case where the game or a previous route restored the system bars.
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     WidgetsBinding.instance.addPostFrameCallback((_) => _drive());
   }
@@ -105,92 +89,61 @@ class _PortalNavigatorState extends State<PortalNavigator>
 
   Future<void> _drive() async {
     _bumpProgress(0.12);
-    _stamp('drive: priming beacon');
     await widget.beacon.prime();
     _bumpProgress(0.22);
 
-    PortalKind kind = widget.depot.readPortalKind();
-    _stamp('stored kind=${kind.name}');
-    _stamp('endpoint present=${JesterManifest.gatewayEndpoint.isNotEmpty}');
-
-    if (kind == PortalKind.native &&
-        JesterManifest.gatewayEndpoint.isNotEmpty) {
-      _stamp('resetting stale native -> pending');
-      await widget.depot.writePortalKind(PortalKind.pending);
-      kind = PortalKind.pending;
-    }
-
-    switch (kind) {
+    switch (widget.depot.readPortalKind()) {
       case PortalKind.native:
-        _stamp('-> native (game)');
         await _openGame(initialLift: 0.4);
         break;
       case PortalKind.web:
-        _stamp('-> resumeGray');
         await _resumeGrayFlow();
         break;
       case PortalKind.pending:
-        _stamp('-> boot');
         await _boot();
         break;
     }
   }
 
   Future<void> _boot() async {
+    // "White part must launch even without internet." If credentials
+    // are still empty (fresh template / pre-launch), skip the whole
+    // pipeline and go straight to the game.
     if (JesterManifest.gatewayEndpoint.isEmpty) {
-      _stamp('boot: endpoint EMPTY -> game');
       await widget.depot.writePortalKind(PortalKind.native);
       await _openGame(initialLift: 0.4);
       return;
     }
 
-    _stamp('boot: probing internet');
-    final bool online = await widget.linkProbe.isReachable();
-    _stamp('boot: online=$online');
-    if (!online) {
-      _stamp('boot: no internet -> NoSignal');
+    if (!await widget.linkProbe.isReachable()) {
       _routeToNoSignal();
       return;
     }
     _bumpProgress(0.42);
 
-    _stamp('boot: igniting AppsFlyer');
     await widget.attribution.ignite();
-    _stamp('boot: waiting install+deeplink');
     await Future.wait<void>(<Future<void>>[
       widget.attribution.awaitInstallPayload(),
       widget.attribution.awaitDeepLink(),
     ]);
-    _stamp('boot: attribution ready');
     _bumpProgress(0.68);
 
-    _stamp('boot: calling gateway');
     final GateVerdict verdict = await _askGateway();
-    _stamp('boot: verdict granted=${verdict.granted} '
-        'hasDest=${verdict.hasDestination} remark=${verdict.remark}');
-
     if (verdict.granted && verdict.hasDestination) {
-      _stamp('boot: -> gray ${verdict.destination}');
       await widget.depot.writePortalKind(PortalKind.web);
       _bumpProgress(1.0);
       await _settle();
       _routeToGray(verdict.destination!);
-      return;
+    } else if (verdict.isTransportError) {
+      // Server unreachable (404, timeout, DNS failure) — do NOT lock the
+      // user into native permanently. Keep PortalKind.pending so the next
+      // launch retries. Show the game for this session only.
+      await _openGame(initialLift: 0.86);
+    } else {
+      // Server explicitly rejected (organic, blocked, etc.) — commit native.
+      await widget.depot.writePortalKind(PortalKind.native);
+      await _openGame(initialLift: 0.86);
     }
-
-    final String? cached = await widget.depot.readCachedDestination();
-    _stamp('boot: cached=${cached ?? "<none>"}');
-    if (cached != null && cached.isNotEmpty) {
-      _stamp('boot: -> gray via cache');
-      await widget.depot.writePortalKind(PortalKind.web);
-      _bumpProgress(1.0);
-      await _settle();
-      _routeToGray(cached);
-      return;
-    }
-
-    _stamp('boot: no cache -> NoSignal');
-    _routeToNoSignal();
   }
 
   Future<void> _resumeGrayFlow() async {
@@ -225,6 +178,7 @@ class _PortalNavigatorState extends State<PortalNavigator>
     if (verdict.granted && verdict.hasDestination) {
       _routeToGray(verdict.destination!);
     } else if (cached != null && cached.isNotEmpty) {
+      // Server down or rejected but we have a cached URL — keep showing gray.
       _routeToGray(cached);
     } else {
       _routeToNoSignal();
@@ -336,25 +290,27 @@ class _PortalNavigatorState extends State<PortalNavigator>
 
   @override
   Widget build(BuildContext context) {
-    final Size size = MediaQuery.of(context).size;
+    final MediaQueryData mq = MediaQuery.of(context);
+    final bool landscape = mq.orientation == Orientation.landscape;
+    final Size size = mq.size;
+    final String bg =
+        landscape ? AppAssets.loadingHorizontal : AppAssets.loadingVertical;
 
-    return PopScope(
-      canPop: false,
-      child: Scaffold(
-        backgroundColor: AppColors.ink,
-        body: Stack(
-          fit: StackFit.expand,
-          children: <Widget>[
-            IgnorePointer(
-              child: Image.asset(
-                AppAssets.loadingVertical,
+    return IgnorePointer(
+      child: PopScope(
+        canPop: false,
+        child: Scaffold(
+          backgroundColor: AppColors.ink,
+          body: Stack(
+            fit: StackFit.expand,
+            children: <Widget>[
+              Image.asset(
+                bg,
                 fit: BoxFit.cover,
                 width: size.width,
                 height: size.height,
               ),
-            ),
-            const IgnorePointer(
-              child: DecoratedBox(
+              const DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.center,
@@ -363,12 +319,10 @@ class _PortalNavigatorState extends State<PortalNavigator>
                   ),
                 ),
               ),
-            ),
-            Positioned(
-              left: 32,
-              right: 32,
-              bottom: size.height * 0.14,
-              child: IgnorePointer(
+              Positioned(
+                left: 32,
+                right: 32,
+                bottom: size.height * (landscape ? 0.12 : 0.14),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
@@ -378,75 +332,20 @@ class _PortalNavigatorState extends State<PortalNavigator>
                         final int n = (_dots.value * 4).floor() % 4;
                         return Text(
                           'Loading${'.' * n}',
-                          style: jesterTextStyle(size: 22, color: AppColors.goldLight),
+                          style: jesterTextStyle(
+                            size: landscape ? 20 : 22,
+                            color: AppColors.goldLight,
+                          ),
                         );
                       },
                     ),
-                    const SizedBox(height: 16),
+                    SizedBox(height: landscape ? 12 : 16),
                     GoldProgressBar(progress: _progress),
                   ],
                 ),
               ),
-            ),
-            // Diagnostic panel — visible in release too. Tap to copy the
-            // log to the clipboard for support.
-            Positioned(
-              top: MediaQuery.of(context).padding.top + 8,
-              left: 8,
-              right: 8,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onLongPress: () async {
-                  final String text = _diagLog.join('\n');
-                  await Clipboard.setData(ClipboardData(text: text));
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Log copied. Send it to support.'),
-                        duration: Duration(seconds: 2),
-                      ),
-                    );
-                  }
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xCC000000),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: <Widget>[
-                      const Text(
-                        'DIAG (long-press to copy)',
-                        style: TextStyle(
-                          color: Color(0xFFFFC94D),
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.6,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      for (final String line in _diagLog)
-                        Text(
-                          line,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            height: 1.15,
-                            fontFamily: 'monospace',
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

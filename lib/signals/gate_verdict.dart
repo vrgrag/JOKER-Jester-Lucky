@@ -9,6 +9,7 @@ class GateVerdict {
     this.destination,
     this.remark,
     this.validUntil,
+    this.isTransportError = false,
   });
 
   /// Backend `ok` — true means route to the WebView with [destination].
@@ -24,6 +25,11 @@ class GateVerdict {
   /// re-queried before being reused.
   final int? validUntil;
 
+  /// True when the failure was a network / HTTP error rather than an
+  /// intentional rejection from the server. Transport errors must NOT
+  /// persist `PortalKind.native` — the next launch should retry.
+  final bool isTransportError;
+
   factory GateVerdict.fromWire(Map<String, dynamic> map) {
     return GateVerdict(
       granted: map['ok'] as bool? ?? false,
@@ -35,6 +41,9 @@ class GateVerdict {
 
   factory GateVerdict.rejected(String remark) =>
       GateVerdict(granted: false, remark: remark);
+
+  factory GateVerdict.transportError(String remark) =>
+      GateVerdict(granted: false, remark: remark, isTransportError: true);
 
   bool get hasDestination =>
       destination != null && destination!.isNotEmpty;
