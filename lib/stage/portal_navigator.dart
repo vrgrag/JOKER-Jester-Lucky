@@ -150,16 +150,29 @@ class _PortalNavigatorState extends State<PortalNavigator>
       _bumpProgress(1.0);
       await _settle();
       _routeToGray(verdict.destination!);
-    } else {
-      // Do NOT write PortalKind.native here — a gateway timeout, HTTP
-      // error or a transient server rejection would permanently lock the
-      // user into the game. Keep the state as `pending` so the full
-      // pipeline is retried on the next launch.
-      //
-      // PortalKind.native is only written above when the gateway endpoint
-      // is empty (pre-launch, no credentials — white-part review mode).
-      await _openGame(initialLift: 0.86);
+      return;
     }
+
+    // Gateway rejected or failed. Fall back to a previously cached
+    // destination (e.g. earlier successful boot on this install). If we
+    // have one, mark this device as gray and go there instead of the
+    // game — the user's intent is the gray content, not the fallback.
+    final String? cached = await widget.depot.readCachedDestination();
+    if (cached != null && cached.isNotEmpty) {
+      await widget.depot.writePortalKind(PortalKind.web);
+      _bumpProgress(1.0);
+      await _settle();
+      _routeToGray(cached);
+      return;
+    }
+
+    // No cached URL and gateway refused. Do NOT persist PortalKind.native
+    // (that would permanently lock the user into the game on every next
+    // launch even after the server recovers). Keep state as `pending` and
+    // show the retry surface so the user can trigger the pipeline again.
+    // PortalKind.native is only written above when the gateway endpoint
+    // is empty (pre-launch / white-review mode).
+    _routeToNoSignal();
   }
 
   Future<void> _resumeGrayFlow() async {
