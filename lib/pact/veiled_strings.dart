@@ -24,8 +24,8 @@ const List<int> _packedGateway = <int>[
 
 // AppsFlyer Dev Key.
 const List<int> _packedAttribution = <int>[
-  246, 3, 102, 237, 4, 18, 238, 199, 197, 23, 204, 189, 174, 178, 221, 97,
-  211, 196, 213, 227, 169,
+  194, 60, 87, 254, 39, 23, 245, 193, 216, 11, 242, 167, 191, 153, 222, 43,
+  210, 229, 246, 202, 188, 192,
 ];
 
 // Firebase project number / sender id.
