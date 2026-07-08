@@ -38,7 +38,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
     super.initState();
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(AppColors.ink)
+      ..setBackgroundColor(Colors.white)
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) => setState(() {
@@ -66,11 +66,20 @@ class _WebViewScreenState extends State<WebViewScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.ink,
+      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: AppColors.purpleDeep,
-        foregroundColor: AppColors.goldLight,
-        title: Text(widget.args.title, style: jesterTextStyle(size: 20)),
+        backgroundColor: Colors.white,
+        foregroundColor: AppColors.ink,
+        elevation: 0.5,
+        title: Text(
+          widget.args.title,
+          style: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+            color: AppColors.ink,
+            shadows: [],
+          ),
+        ),
         centerTitle: true,
       ),
       body: Stack(
@@ -92,7 +101,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
                     Text(
                       'Unable to load this page.\nPlease check your internet connection.',
                       textAlign: TextAlign.center,
-                      style: jesterTextStyle(size: 16, color: AppColors.parchment),
+                      style: const TextStyle(fontSize: 16, color: AppColors.purpleDeep),
                     ),
                     const SizedBox(height: 24),
                     JesterButton(label: 'RETRY', onTap: _retry, fontSize: 16),
