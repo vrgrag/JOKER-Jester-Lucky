@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/app_assets.dart';
 import 'carnival_pill.dart';
@@ -22,8 +23,29 @@ class NoSignalStage extends StatefulWidget {
   State<NoSignalStage> createState() => _NoSignalStageState();
 }
 
-class _NoSignalStageState extends State<NoSignalStage> {
+class _NoSignalStageState extends State<NoSignalStage>
+    with WidgetsBindingObserver {
   bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
 
   Future<void> _handleRetry() async {
     if (_busy) return;
@@ -44,67 +66,54 @@ class _NoSignalStageState extends State<NoSignalStage> {
         ? AppAssets.noSignalHorizontal
         : AppAssets.noSignalVertical;
 
-    // Cutout-safe padding — landscape needs BOTH sides padded because
-    // the camera notch may sit on the long edge (§14).
-    final EdgeInsets safe = landscape
-        ? EdgeInsets.only(
-            left: mq.viewPadding.left,
-            right: mq.viewPadding.right,
-            top: mq.viewPadding.top,
-          )
-        : EdgeInsets.only(top: mq.viewPadding.top);
-
     final double buttonWidth = landscape
         ? (size.width * 0.30).clamp(200.0, 420.0)
         : (size.width * 0.66).clamp(220.0, 380.0);
 
     return Scaffold(
       backgroundColor: const Color(0xFF120521),
-      body: Padding(
-        padding: safe,
-        child: Stack(
-          fit: StackFit.expand,
-          children: <Widget>[
-            Image.asset(
-              bg,
-              fit: BoxFit.cover,
-              width: size.width,
-              height: size.height,
-            ),
-            const DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.center,
-                  end: Alignment.bottomCenter,
-                  colors: <Color>[Colors.transparent, Color(0xAA000000)],
-                ),
+      body: Stack(
+        fit: StackFit.expand,
+        children: <Widget>[
+          Image.asset(
+            bg,
+            fit: BoxFit.cover,
+            width: size.width,
+            height: size.height,
+          ),
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.center,
+                end: Alignment.bottomCenter,
+                colors: <Color>[Colors.transparent, Color(0xAA000000)],
               ),
             ),
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: size.height * (landscape ? 0.09 : 0.10),
-              child: Center(
-                child: _busy
-                    ? const SizedBox(
-                        width: 40,
-                        height: 40,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 3.4,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                            Color(0xFFFFC94D),
-                          ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: size.height * (landscape ? 0.09 : 0.10),
+            child: Center(
+              child: _busy
+                  ? const SizedBox(
+                      width: 40,
+                      height: 40,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3.4,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          Color(0xFFFFC94D),
                         ),
-                      )
-                    : CarnivalPill(
-                        label: 'RETRY',
-                        width: buttonWidth,
-                        onTap: _handleRetry,
                       ),
-              ),
+                    )
+                  : CarnivalPill(
+                      label: 'RETRY',
+                      width: buttonWidth,
+                      onTap: _handleRetry,
+                    ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

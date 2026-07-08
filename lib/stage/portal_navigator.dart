@@ -68,6 +68,9 @@ class _PortalNavigatorState extends State<PortalNavigator>
       duration: const Duration(milliseconds: 1400),
     )..repeat();
     widget.beacon.onTokenRotated = _rebroadcastToken;
+    // Re-assert immersive mode each time this screen builds — covers the
+    // case where the game or a previous route restored the system bars.
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     WidgetsBinding.instance.addPostFrameCallback((_) => _drive());
   }
 
@@ -286,68 +289,55 @@ class _PortalNavigatorState extends State<PortalNavigator>
     final String bg =
         landscape ? AppAssets.loadingHorizontal : AppAssets.loadingVertical;
 
-    // Cutout-safe padding — landscape needs both sides handled (§14).
-    final EdgeInsets safe = landscape
-        ? EdgeInsets.only(
-            left: mq.viewPadding.left,
-            right: mq.viewPadding.right,
-            top: mq.viewPadding.top,
-            bottom: mq.viewPadding.bottom,
-          )
-        : EdgeInsets.only(top: mq.viewPadding.top);
-
     return IgnorePointer(
       child: PopScope(
         canPop: false,
         child: Scaffold(
           backgroundColor: AppColors.ink,
-          body: Padding(
-            padding: safe,
-            child: Stack(
-              fit: StackFit.expand,
-              children: <Widget>[
-                Image.asset(
-                  bg,
-                  fit: BoxFit.cover,
-                  width: size.width,
-                  height: size.height,
+          body: Stack(
+            fit: StackFit.expand,
+            children: <Widget>[
+              Image.asset(
+                bg,
+                fit: BoxFit.cover,
+                width: size.width,
+                height: size.height,
+              ),
+              const DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.center,
+                    end: Alignment.bottomCenter,
+                    colors: <Color>[Colors.transparent, Color(0xAA000000)],
+                  ),
                 ),
-                const DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.center,
-                      end: Alignment.bottomCenter,
-                      colors: <Color>[Colors.transparent, Color(0xAA000000)],
+              ),
+              Positioned(
+                left: 32,
+                right: 32,
+                bottom: size.height * (landscape ? 0.12 : 0.14),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    AnimatedBuilder(
+                      animation: _dots,
+                      builder: (BuildContext context, _) {
+                        final int n = (_dots.value * 4).floor() % 4;
+                        return Text(
+                          'Loading${'.' * n}',
+                          style: jesterTextStyle(
+                            size: landscape ? 20 : 22,
+                            color: AppColors.goldLight,
+                          ),
+                        );
+                      },
                     ),
-                  ),
+                    SizedBox(height: landscape ? 12 : 16),
+                    GoldProgressBar(progress: _progress),
+                  ],
                 ),
-                Positioned(
-                  left: 32,
-                  right: 32,
-                  bottom: size.height * (landscape ? 0.12 : 0.14),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: <Widget>[
-                      AnimatedBuilder(
-                        animation: _dots,
-                        builder: (BuildContext context, _) {
-                          final int n = (_dots.value * 4).floor() % 4;
-                          return Text(
-                            'Loading${'.' * n}',
-                            style: jesterTextStyle(
-                              size: landscape ? 20 : 22,
-                              color: AppColors.goldLight,
-                            ),
-                          );
-                        },
-                      ),
-                      SizedBox(height: landscape ? 12 : 16),
-                      GoldProgressBar(progress: _progress),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),

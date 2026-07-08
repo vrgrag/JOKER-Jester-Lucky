@@ -27,7 +27,9 @@ import 'depot.dart';
 // Rename atomically per project — see `.cursor/rules/custom_screens.md`.
 const String jesterChannelId = 'jester_pulse';
 const String jesterChannelLabel = 'Jester Pulse';
-const String _iconRef = '@drawable/ic_notification';
+// Drawable resource name only — flutter_local_notifications does NOT
+// accept the '@drawable/' XML prefix here.
+const String _iconRef = 'ic_notification';
 
 @pragma('vm:entry-point')
 Future<void> _backgroundBridge(RemoteMessage message) async {

@@ -49,6 +49,9 @@ Future<void> main() async {
   } catch (_) {}
 
   await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+  // Hide status bar + nav bar for all gray screens (loading, no-signal,
+  // beacon-invite). The game and ReaderStage re-call this themselves.
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
