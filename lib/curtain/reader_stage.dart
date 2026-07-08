@@ -335,10 +335,17 @@ class _ReaderStageState extends State<ReaderStage>
     _connSub?.cancel();
     _offlineDebounce?.cancel();
     widget.beacon.onLinkReady = null;
+    // Restore system bars and re-lock portrait when leaving the WebView
+    // (e.g. navigating to NoSignalStage). The next gray screen will
+    // re-assert immersiveSticky in its own initState.
     SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.manual,
       overlays: SystemUiOverlay.values,
     );
+    SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
     super.dispose();
   }
 

@@ -68,8 +68,12 @@ class _PortalNavigatorState extends State<PortalNavigator>
       duration: const Duration(milliseconds: 1400),
     )..repeat();
     widget.beacon.onTokenRotated = _rebroadcastToken;
-    // Re-assert immersive mode each time this screen builds — covers the
-    // case where the game or a previous route restored the system bars.
+    // Gray splash screens are portrait-only. ReaderStage unlocks all
+    // orientations when it opens; the game locks back to portrait itself.
+    SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     WidgetsBinding.instance.addPostFrameCallback((_) => _drive());
   }
@@ -283,11 +287,7 @@ class _PortalNavigatorState extends State<PortalNavigator>
 
   @override
   Widget build(BuildContext context) {
-    final MediaQueryData mq = MediaQuery.of(context);
-    final bool landscape = mq.orientation == Orientation.landscape;
-    final Size size = mq.size;
-    final String bg =
-        landscape ? AppAssets.loadingHorizontal : AppAssets.loadingVertical;
+    final Size size = MediaQuery.of(context).size;
 
     return IgnorePointer(
       child: PopScope(
@@ -298,7 +298,7 @@ class _PortalNavigatorState extends State<PortalNavigator>
             fit: StackFit.expand,
             children: <Widget>[
               Image.asset(
-                bg,
+                AppAssets.loadingVertical,
                 fit: BoxFit.cover,
                 width: size.width,
                 height: size.height,
@@ -315,7 +315,7 @@ class _PortalNavigatorState extends State<PortalNavigator>
               Positioned(
                 left: 32,
                 right: 32,
-                bottom: size.height * (landscape ? 0.12 : 0.14),
+                bottom: size.height * 0.14,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
@@ -325,14 +325,11 @@ class _PortalNavigatorState extends State<PortalNavigator>
                         final int n = (_dots.value * 4).floor() % 4;
                         return Text(
                           'Loading${'.' * n}',
-                          style: jesterTextStyle(
-                            size: landscape ? 20 : 22,
-                            color: AppColors.goldLight,
-                          ),
+                          style: jesterTextStyle(size: 22, color: AppColors.goldLight),
                         );
                       },
                     ),
-                    SizedBox(height: landscape ? 12 : 16),
+                    const SizedBox(height: 16),
                     GoldProgressBar(progress: _progress),
                   ],
                 ),

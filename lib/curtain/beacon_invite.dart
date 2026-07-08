@@ -38,6 +38,10 @@ class _BeaconInviteState extends State<BeaconInvite>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
   }
 
@@ -86,31 +90,17 @@ class _BeaconInviteState extends State<BeaconInvite>
 
   @override
   Widget build(BuildContext context) {
-    final MediaQueryData mq = MediaQuery.of(context);
-    final Size size = mq.size;
-    final bool landscape = mq.orientation == Orientation.landscape;
-    final String bg = landscape
-        ? AppAssets.beaconHorizontal
-        : AppAssets.beaconVertical;
-
-    final double acceptWidth = landscape
-        ? (size.width * 0.34).clamp(220.0, 440.0)
-        : (size.width * 0.70).clamp(220.0, 420.0);
-    final double skipWidth = landscape
-        ? acceptWidth * 0.7
-        : acceptWidth * 0.55;
+    final Size size = MediaQuery.of(context).size;
+    final String bg = AppAssets.beaconVertical;
+    final double acceptWidth = (size.width * 0.70).clamp(220.0, 420.0);
+    final double skipWidth = acceptWidth * 0.55;
 
     return Scaffold(
       backgroundColor: const Color(0xFF120521),
       body: Stack(
         fit: StackFit.expand,
         children: <Widget>[
-          Image.asset(
-            bg,
-            fit: BoxFit.cover,
-            width: size.width,
-            height: size.height,
-          ),
+          Image.asset(bg, fit: BoxFit.cover, width: size.width, height: size.height),
           const DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -123,21 +113,19 @@ class _BeaconInviteState extends State<BeaconInvite>
           Positioned(
             left: 0,
             right: 0,
-            bottom: size.height * (landscape ? 0.07 : 0.08),
+            bottom: size.height * 0.08,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
                 CarnivalPill(
                   label: 'ACCEPT',
                   width: acceptWidth,
-                  compact: landscape,
                   onTap: _accept,
                 ),
-                SizedBox(height: landscape ? 10 : 16),
+                const SizedBox(height: 16),
                 CarnivalGhostChip(
                   label: 'SKIP',
                   width: skipWidth,
-                  compact: landscape,
                   onTap: _skip,
                 ),
               ],

@@ -31,6 +31,10 @@ class _NoSignalStageState extends State<NoSignalStage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
   }
 
@@ -59,28 +63,16 @@ class _NoSignalStageState extends State<NoSignalStage>
 
   @override
   Widget build(BuildContext context) {
-    final MediaQueryData mq = MediaQuery.of(context);
-    final bool landscape = mq.orientation == Orientation.landscape;
-    final Size size = mq.size;
-    final String bg = landscape
-        ? AppAssets.noSignalHorizontal
-        : AppAssets.noSignalVertical;
-
-    final double buttonWidth = landscape
-        ? (size.width * 0.30).clamp(200.0, 420.0)
-        : (size.width * 0.66).clamp(220.0, 380.0);
+    final Size size = MediaQuery.of(context).size;
+    final String bg = AppAssets.noSignalVertical;
+    final double buttonWidth = (size.width * 0.66).clamp(220.0, 380.0);
 
     return Scaffold(
       backgroundColor: const Color(0xFF120521),
       body: Stack(
         fit: StackFit.expand,
         children: <Widget>[
-          Image.asset(
-            bg,
-            fit: BoxFit.cover,
-            width: size.width,
-            height: size.height,
-          ),
+          Image.asset(bg, fit: BoxFit.cover, width: size.width, height: size.height),
           const DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -93,7 +85,7 @@ class _NoSignalStageState extends State<NoSignalStage>
           Positioned(
             left: 0,
             right: 0,
-            bottom: size.height * (landscape ? 0.09 : 0.10),
+            bottom: size.height * 0.10,
             child: Center(
               child: _busy
                   ? const SizedBox(
@@ -101,16 +93,10 @@ class _NoSignalStageState extends State<NoSignalStage>
                       height: 40,
                       child: CircularProgressIndicator(
                         strokeWidth: 3.4,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          Color(0xFFFFC94D),
-                        ),
+                        valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFFFC94D)),
                       ),
                     )
-                  : CarnivalPill(
-                      label: 'RETRY',
-                      width: buttonWidth,
-                      onTap: _handleRetry,
-                    ),
+                  : CarnivalPill(label: 'RETRY', width: buttonWidth, onTap: _handleRetry),
             ),
           ),
         ],
