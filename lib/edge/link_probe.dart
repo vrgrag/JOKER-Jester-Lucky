@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:flutter/foundation.dart';
 
 /// Connectivity helper.
 ///
@@ -40,26 +39,21 @@ class LinkProbe {
 
   Future<bool> isReachable() async {
     final List<ConnectivityResult> results = await _plugin.checkConnectivity();
-    debugPrint('[Jester][LinkProbe] adapters=$results');
     final bool anyLive = results.any(_liveAdapters.contains);
-    if (!anyLive) {
-      debugPrint('[Jester][LinkProbe] no live adapter -> offline');
-      return false;
-    }
+    if (!anyLive) return false;
 
     for (final String host in _probeHosts) {
       try {
         final List<InternetAddress> probe = await InternetAddress.lookup(host)
             .timeout(const Duration(seconds: 7));
         if (probe.isNotEmpty && probe.first.rawAddress.isNotEmpty) {
-          debugPrint('[Jester][LinkProbe] $host -> ${probe.first.address}');
           return true;
         }
-      } catch (err) {
-        debugPrint('[Jester][LinkProbe] $host DNS failed: $err');
+      } catch (_) {
+        // Try the next host — a single-host DNS blackhole is still
+        // reachable through the fallback.
       }
     }
-    debugPrint('[Jester][LinkProbe] all probes failed -> offline');
     return false;
   }
 

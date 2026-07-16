@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_assets.dart';
 import '../../core/app_theme.dart';
+import '../../edge/insight.dart';
 import '../../game/jester_lucky_game.dart';
 import '../../services/storage_service.dart';
 import 'widgets/game_over_overlay.dart';
@@ -30,6 +31,8 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void initState() {
     super.initState();
+    Insight.screen('game');
+    Insight.event('game_start');
     _game = JesterLuckyGame(onGameOver: _handleGameOver);
   }
 
@@ -37,6 +40,10 @@ class _GameScreenState extends State<GameScreen> {
     final storage = await StorageService.getInstance();
     final isNew = await storage.reportRun(score: score, coins: coins);
     if (!mounted) return;
+    Insight.event('game_over');
+    Insight.tag('last_game_score', '$score');
+    Insight.tag('last_game_coins', '$coins');
+    if (isNew) Insight.event('game_new_record');
     setState(() {
       _finalScore = score;
       _finalCoins = coins;
@@ -48,6 +55,7 @@ class _GameScreenState extends State<GameScreen> {
   }
 
   void _retry() {
+    Insight.event('game_retry');
     setState(() => _showGameOver = false);
     _game.reset();
   }

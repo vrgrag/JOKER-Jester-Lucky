@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_assets.dart';
 import '../../core/app_theme.dart';
+import '../../edge/insight.dart';
 import '../../services/storage_service.dart';
 import '../../widgets/jester_button.dart';
 import '../game/game_screen.dart';
@@ -23,6 +24,7 @@ class _MainMenuScreenState extends State<MainMenuScreen> {
   @override
   void initState() {
     super.initState();
+    Insight.screen('menu');
     _loadBest();
   }
 

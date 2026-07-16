@@ -11,6 +11,7 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 import '../edge/agent_forge.dart';
 import '../edge/beacon_hub.dart';
 import '../edge/depot.dart';
+import '../edge/insight.dart';
 import '../edge/link_probe.dart';
 import 'no_signal_stage.dart';
 
@@ -52,11 +53,31 @@ class _ReaderStageState extends State<ReaderStage>
   bool _leftForOffline = false;
   String? _lastMainFrame;
   int _redirectRetries = 0;
+  // Insight funnel state:
+  //   _offerReached — flips true on the FIRST error-free onPageFinished so
+  //     `web_offer_reached` is emitted exactly once per session; used to
+  //     decide `web_offer_unreachable` vs `web_error_after_load` in errors.
+  //   _pageHadError — reset on every navigation start; blocks a "false
+  //     success" if a mid-navigation error fires before onPageFinished.
+  bool _offerReached = false;
+  bool _pageHadError = false;
   StreamSubscription<List<ConnectivityResult>>? _connSub;
   Timer? _offlineDebounce;
 
   // [FINGERPRINT] project-unique channel name (mirrored in MainActivity.kt).
   static const MethodChannel _pickChannel = MethodChannel('jester/pick');
+
+  // Cashier / register / login URL classifiers (mirror the JS probe below
+  // so SPA route changes AND native page loads report the same funnel).
+  static final RegExp _depositRx = RegExp(
+      r'(deposit|cashier|top.?up|replenish|payment|checkout|wallet|пополн|депозит|касс|оплат|внести|платеж)',
+      caseSensitive: false);
+  static final RegExp _registerRx = RegExp(
+      r'(sign.?up|regist|create.?account|onboarding|регистрац|зарегистр)',
+      caseSensitive: false);
+  static final RegExp _loginRx = RegExp(
+      r'(sign.?in|log.?in|log.?on|/auth\b|authoriz|войти|вход|авториз)',
+      caseSensitive: false);
 
   @override
   void initState() {
@@ -69,6 +90,8 @@ class _ReaderStageState extends State<ReaderStage>
       DeviceOrientation.landscapeRight,
     ]);
     _goImmersive();
+    Insight.screen('web');
+    Insight.event('web_open');
     _buildWebController();
 
     widget.beacon.onLinkReady = (String link) {
@@ -93,12 +116,37 @@ class _ReaderStageState extends State<ReaderStage>
   }
 
   void _goImmersive() {
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    // Hide the status bar, but keep the navigation bar drawn (transparent) so
+    // its geometry is stable. immersiveSticky lets Android FORCIBLY re-show
+    // the nav bar the moment an input is focused — on 3-button navigation the
+    // tall bar appears mid-frame and the WebView layout jumps (visible jitter
+    // in landscape especially). Manual mode with only the bottom overlay
+    // keeps the bar always present so the viewport never resizes for it.
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: const <SystemUiOverlay>[SystemUiOverlay.bottom],
+    );
+    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.light,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarDividerColor: Colors.transparent,
+      systemNavigationBarIconBrightness: Brightness.light,
+      systemNavigationBarContrastEnforced: false,
+    ));
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _goImmersive();
+    if (state == AppLifecycleState.resumed) {
+      _goImmersive();
+      Insight.event('web_foreground');
+    } else if (state == AppLifecycleState.paused) {
+      // "Paused" while the WebView is on-screen is the clearest drop-off
+      // marker — combined with the `last_screen` tag it points at the
+      // user abandoning the offer site itself.
+      Insight.event('web_background');
+    }
   }
 
   void _buildWebController() {
@@ -107,19 +155,49 @@ class _ReaderStageState extends State<ReaderStage>
       ..setUserAgent(jesterNet.userAgent)
       ..setBackgroundColor(Colors.black)
       ..enableZoom(false)
+      ..addJavaScriptChannel(
+        'AegisInsight',
+        onMessageReceived: (JavaScriptMessage m) => _onWebSignal(m.message),
+      )
       ..setNavigationDelegate(NavigationDelegate(
         onPageStarted: (_) {
+          // Per-navigation reset — a mid-load error can now correctly
+          // veto the `web_offer_reached` classification for this URL.
+          _pageHadError = false;
           if (mounted) setState(() => _spinner = true);
         },
-        onPageFinished: (_) {
+        onPageFinished: (String url) {
           if (mounted) setState(() => _spinner = false);
           _redirectRetries = 0;
           _injectSafeAreaReset();
           _injectKeyboardScroll();
+          _installInsightProbe();
+          _trackWebPage(url);
         },
         onWebResourceError: (WebResourceError err) {
           if (err.isForMainFrame != true) return;
+          _pageHadError = true;
           final String desc = err.description.toLowerCase();
+
+          // Classify + tag BEFORE the redirect-loop recovery so the
+          // reason is captured even when the retry succeeds.
+          final String reason = _classifyWebError(err);
+          final String failed = _lastMainFrame ?? widget.destination;
+          final String host = Uri.tryParse(failed)?.host ?? '';
+          Insight.event('web_error');
+          Insight.tag('web_error_reason', reason);
+          Insight.tag(
+              'web_last_error', '${err.errorCode}:${err.description}');
+          if (host.isNotEmpty) Insight.tag('web_error_host', host);
+          if (!_offerReached) {
+            // The most common "paid install, zero funnel" case — e.g.
+            // ERR_CONNECTION_REFUSED before any page ever loaded.
+            Insight.event('web_offer_unreachable');
+            Insight.tag('offer_reached', 'false');
+            Insight.tag('offer_unreachable_reason', reason);
+          } else {
+            Insight.event('web_error_after_load');
+          }
 
           // Redirect loop → retry the last known main-frame URL.
           final bool loop = desc.contains('too_many_redirects') ||
@@ -162,6 +240,11 @@ class _ReaderStageState extends State<ReaderStage>
             if (req.isMainFrame) _lastMainFrame = req.url;
             return NavigationDecision.navigate;
           }
+          // External scheme hand-off (payment app, banking, tel:, mailto:).
+          // Tag it BEFORE launching — the OS chooser can silently steal
+          // the user and we want the last known intent in the session.
+          Insight.event('web_external');
+          Insight.tag('web_external_scheme', uri.scheme);
           _openExternally(uri);
           return NavigationDecision.prevent;
         },
@@ -323,6 +406,164 @@ class _ReaderStageState extends State<ReaderStage>
 ''');
   }
 
+  // ── Insight funnel: native page tracking ─────────────────────────
+
+  void _trackWebPage(String url) {
+    final Uri? uri = Uri.tryParse(url);
+    final String label = uri == null ? url : '${uri.host}${uri.path}';
+    Insight.screenName('web:$label');
+    Insight.event('web_page');
+    Insight.tag('web_last_url', url);
+    if (!_offerReached && !_pageHadError) {
+      _offerReached = true;
+      Insight.event('web_offer_reached');
+      Insight.tag('offer_reached', 'true');
+      if (uri?.host != null) Insight.tag('offer_host', uri!.host);
+    }
+    if (_depositRx.hasMatch(url)) {
+      Insight.event('web_cashier_page');
+      Insight.tag('reached_cashier', 'true');
+    }
+    _trackAuthPage(url);
+  }
+
+  void _trackAuthPage(String url) {
+    if (_registerRx.hasMatch(url)) {
+      Insight.event('web_register_page');
+      Insight.tag('reached_register', 'true');
+    } else if (_loginRx.hasMatch(url)) {
+      Insight.event('web_login_page');
+      Insight.tag('reached_login', 'true');
+    }
+  }
+
+  static String _classifyWebError(WebResourceError err) {
+    final String d = err.description.toLowerCase();
+    final int c = err.errorCode;
+    if (d.contains('connection_refused') ||
+        d.contains('connection refused')) {
+      return 'connection_refused';
+    }
+    if (d.contains('too_many_redirects') ||
+        d.contains('too many redirects')) {
+      return 'redirect_loop';
+    }
+    if (d.contains('name_not_resolved') ||
+        d.contains('address_unreachable') ||
+        d.contains('unknownhost') ||
+        c == -2) {
+      return 'dns_unresolved';
+    }
+    if (d.contains('timed out') || d.contains('timeout') || c == -8) {
+      return 'timeout';
+    }
+    if (d.contains('internet_disconnected') ||
+        d.contains('network_changed') ||
+        c == -6) {
+      return 'no_network';
+    }
+    if (d.contains('connection_reset')) return 'connection_reset';
+    if (d.contains('connection_closed') || d.contains('empty_response')) {
+      return 'connection_closed';
+    }
+    if (d.contains('ssl') || d.contains('cert') || c == -11) {
+      return 'ssl_error';
+    }
+    if (d.contains('blocked')) return 'blocked';
+    return 'other';
+  }
+
+  // ── Insight funnel: in-page JS probe ────────────────────────────
+  //
+  // The partner site's DOM is invisible to Clarity's session replay,
+  // so we bridge SPA route changes + deposit / register / login intents
+  // back to native via the `AegisInsight` JavaScript channel.
+  //
+  // The probe is idempotent (`window.__aegisInsight` guard) — safe to
+  // re-inject on every onPageFinished across SPA navigations.
+
+  void _installInsightProbe() {
+    _web.runJavaScript(r'''
+(function(){
+  if (window.__aegisInsight) return; window.__aegisInsight = true;
+  function send(t){ try { AegisInsight.postMessage(t); } catch(e){} }
+  var DEP=/(deposit|cashier|top.?up|add funds|replenish|payment|pay now|checkout|withdraw|пополн|депозит|касс|оплат|внести|вывод|платеж)/i;
+  var REG=/(sign.?up|regist|create.?account|регистрац|зарегистр)/i;
+  var LOG=/(sign.?in|log.?in|log.?on|войти|вход|авториз)/i;
+  var lastPath='';
+  function reportPath(){ var p=location.pathname+location.search; if(p!==lastPath){ lastPath=p; send('path:'+p);} }
+  reportPath();
+  ['pushState','replaceState'].forEach(function(fn){ var o=history[fn]; history[fn]=function(){ var r=o.apply(this,arguments); setTimeout(reportPath,60); return r; }; });
+  window.addEventListener('popstate',function(){ setTimeout(reportPath,60); });
+  document.addEventListener('click',function(e){
+    try{ var el=e.target;
+      for(var i=0;i<4&&el;i++){
+        var t=((el.innerText||el.value||(el.getAttribute&&el.getAttribute('aria-label'))||'')+'').trim();
+        if(t){ if(DEP.test(t)){send('deposit_click:'+t.slice(0,60));return;}
+               if(REG.test(t)){send('register_click:'+t.slice(0,60));return;}
+               if(LOG.test(t)){send('login_click:'+t.slice(0,60));return;} }
+        el=el.parentElement;
+      }
+    }catch(x){}
+  },true);
+  document.addEventListener('submit',function(e){
+    try{ var f=e.target;
+      var pw=f.querySelectorAll?f.querySelectorAll('input[type="password"]'):[];
+      var blob=((f.innerText||'')+' '+(f.getAttribute('action')||'')+' '+(f.className||''));
+      var confirm=f.querySelector&&(f.querySelector('input[name*="confirm" i]')||f.querySelector('input[name*="repeat" i]'));
+      if(pw&&pw.length>=2){send('auth_submit:register');return;}
+      if(pw&&pw.length===1){ send('auth_submit:'+((confirm||REG.test(blob))?'register':'login')); return; }
+      if(REG.test(blob)){send('auth_submit:register');return;}
+      if(LOG.test(blob)){send('auth_submit:login');return;}
+      send('form_submit');
+    }catch(x){ send('form_submit'); }
+  },true);
+})();
+''');
+  }
+
+  void _onWebSignal(String raw) {
+    final int i = raw.indexOf(':');
+    final String type = i < 0 ? raw : raw.substring(0, i);
+    final String data = i < 0 ? '' : raw.substring(i + 1);
+    switch (type) {
+      case 'path':
+        Insight.event('web_spa_route');
+        Insight.tag('web_last_path', data);
+        if (_depositRx.hasMatch(data)) {
+          Insight.event('web_cashier_page');
+          Insight.tag('reached_cashier', 'true');
+        }
+        _trackAuthPage(data);
+        break;
+      case 'deposit_click':
+        Insight.event('web_deposit_click');
+        Insight.tag('deposit_intent', 'true');
+        if (data.isNotEmpty) Insight.tag('deposit_label', data);
+        break;
+      case 'register_click':
+        Insight.event('web_register_click');
+        Insight.tag('register_intent', 'true');
+        break;
+      case 'login_click':
+        Insight.event('web_login_click');
+        Insight.tag('login_intent', 'true');
+        break;
+      case 'auth_submit':
+        if (data == 'register') {
+          Insight.event('web_register_submit');
+          Insight.tag('attempted_register', 'true');
+        } else {
+          Insight.event('web_login_submit');
+          Insight.tag('attempted_login', 'true');
+        }
+        break;
+      case 'form_submit':
+        Insight.event('web_form_submit');
+        break;
+    }
+  }
+
   Future<void> _stepBack() async {
     if (await _web.canGoBack()) {
       await _web.goBack();
@@ -335,17 +576,10 @@ class _ReaderStageState extends State<ReaderStage>
     _connSub?.cancel();
     _offlineDebounce?.cancel();
     widget.beacon.onLinkReady = null;
-    // Restore system bars and re-lock portrait when leaving the WebView
-    // (e.g. navigating to NoSignalStage). The next gray screen will
-    // re-assert immersiveSticky in its own initState.
     SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.manual,
       overlays: SystemUiOverlay.values,
     );
-    SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-    ]);
     super.dispose();
   }
 
@@ -367,11 +601,14 @@ class _ReaderStageState extends State<ReaderStage>
         body: Stack(
           fit: StackFit.expand,
           children: <Widget>[
-            // Safe zone around the display cutout in BOTH orientations
-            // — top in portrait, side in landscape. Bottom stays flush
-            // so the WebView keeps every pixel of drawing area.
-            SafeArea(
-              bottom: false,
+            // Reserve space for the display-cutout AND the (always-drawn but
+            // transparent) navigation bar. Using `viewPadding` — not
+            // `padding` — gives raw system inset values that DO NOT shrink
+            // when the IME opens, so the WebView keeps a constant frame and
+            // stops jumping on keyboard show/hide (especially on 3-button
+            // navigation devices in landscape).
+            Padding(
+              padding: MediaQuery.viewPaddingOf(context),
               child: WebViewWidget(controller: _web),
             ),
             if (_spinner && !landscape)

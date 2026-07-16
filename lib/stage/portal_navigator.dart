@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -13,6 +14,7 @@ import '../edge/attribution_relay.dart';
 import '../edge/beacon_hub.dart';
 import '../edge/depot.dart';
 import '../edge/gateway_relay.dart';
+import '../edge/insight.dart';
 import '../edge/link_probe.dart';
 import '../pact/manifest.dart';
 import '../screens/menu/main_menu_screen.dart';
@@ -71,6 +73,7 @@ class _PortalNavigatorState extends State<PortalNavigator>
     // Re-assert immersive mode each time this screen builds — covers the
     // case where the game or a previous route restored the system bars.
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    Insight.screen('loading');
     WidgetsBinding.instance.addPostFrameCallback((_) => _drive());
   }
 
@@ -92,8 +95,25 @@ class _PortalNavigatorState extends State<PortalNavigator>
     await widget.beacon.prime();
     _bumpProgress(0.22);
 
-    switch (widget.depot.readPortalKind()) {
+    // In debug builds always re-run the gateway pipeline. A single prior
+    // test session that got explicitly rejected by the server (Organic
+    // status, blocked, etc.) permanently commits `PortalKind.native` —
+    // after that the app boots straight into the game and gray is never
+    // reachable again. That is desired in production but murder while
+    // iterating on the gray flow locally.
+    PortalKind kind = widget.depot.readPortalKind();
+    if (kDebugMode && kind == PortalKind.native) {
+      await widget.depot.writePortalKind(PortalKind.pending);
+      kind = PortalKind.pending;
+    }
+
+    switch (kind) {
       case PortalKind.native:
+        // Returning "committed native" install — skip the whole
+        // attribution / gateway loop. Tag the run mode so drop-off
+        // analysis can exclude native sessions from the offer funnel.
+        Insight.tag('run_mode', 'native');
+        Insight.event('route_native');
         await _openGame(initialLift: 0.4);
         break;
       case PortalKind.web:
@@ -111,6 +131,8 @@ class _PortalNavigatorState extends State<PortalNavigator>
     // pipeline and go straight to the game.
     if (JesterManifest.gatewayEndpoint.isEmpty) {
       await widget.depot.writePortalKind(PortalKind.native);
+      Insight.tag('run_mode', 'native');
+      Insight.event('route_native');
       await _openGame(initialLift: 0.4);
       return;
     }
@@ -128,9 +150,18 @@ class _PortalNavigatorState extends State<PortalNavigator>
     ]);
     _bumpProgress(0.68);
 
+    // OneLink short-circuit — if AppsFlyer delivered a click event with
+    // a usable destination URL, we ALREADY know this session must go
+    // gray. Skip the gateway round-trip entirely and load the OneLink
+    // target directly; the gateway is only there to make the routing
+    // decision for cold organic installs.
+    if (await _tryRouteFromOneLink()) return;
+
     final GateVerdict verdict = await _askGateway();
     if (verdict.granted && verdict.hasDestination) {
       await widget.depot.writePortalKind(PortalKind.web);
+      Insight.tag('run_mode', 'web');
+      Insight.event('route_web');
       _bumpProgress(1.0);
       await _settle();
       _routeToGray(verdict.destination!);
@@ -138,10 +169,16 @@ class _PortalNavigatorState extends State<PortalNavigator>
       // Server unreachable (404, timeout, DNS failure) — do NOT lock the
       // user into native permanently. Keep PortalKind.pending so the next
       // launch retries. Show the game for this session only.
+      Insight.tag('run_mode', 'native');
+      Insight.tag('route_reason', 'gateway_transport_error');
+      Insight.event('route_native');
       await _openGame(initialLift: 0.86);
     } else {
       // Server explicitly rejected (organic, blocked, etc.) — commit native.
       await widget.depot.writePortalKind(PortalKind.native);
+      Insight.tag('run_mode', 'native');
+      Insight.tag('route_reason', 'gateway_rejected');
+      Insight.event('route_native');
       await _openGame(initialLift: 0.86);
     }
   }
@@ -156,6 +193,11 @@ class _PortalNavigatorState extends State<PortalNavigator>
 
     final String? pending = await widget.depot.takePendingLink();
     if (pending != null) {
+      // Warm push tap during boot — user tapped a notification and we
+      // have a hot link. Separate route event so push-driven sessions
+      // can be sliced from organic web returns in the dashboard.
+      Insight.tag('run_mode', 'web');
+      Insight.event('route_push_link');
       _bumpProgress(1.0);
       await _settle();
       _routeToGray(pending);
@@ -171,18 +213,93 @@ class _PortalNavigatorState extends State<PortalNavigator>
     ]);
     _bumpProgress(0.72);
 
+    // OneLink short-circuit for a returning user — same logic as _boot:
+    // a click with a valid destination URL forces gray regardless of
+    // what the gateway would say for this device.
+    if (await _tryRouteFromOneLink()) return;
+
     final GateVerdict verdict = await _askGateway();
     _bumpProgress(1.0);
     await _settle();
 
     if (verdict.granted && verdict.hasDestination) {
+      Insight.tag('run_mode', 'web');
+      Insight.event('route_web');
       _routeToGray(verdict.destination!);
     } else if (cached != null && cached.isNotEmpty) {
       // Server down or rejected but we have a cached URL — keep showing gray.
+      Insight.tag('run_mode', 'web');
+      Insight.event('route_cached_link');
       _routeToGray(cached);
     } else {
       _routeToNoSignal();
     }
+  }
+
+  /// Returns `true` when a OneLink click was detected and the user was
+  /// routed to the gray flow (caller must `return` immediately).
+  ///
+  /// Two routing strategies:
+  ///   1. OneLink carries a real `https://…` destination in
+  ///      `deep_link_value` / `af_dp` etc. → load it directly.
+  ///   2. OneLink click detected but no URL in the payload
+  ///      (e.g. `deep_link_value=some_token`) → use the gateway verdict
+  ///      instead, but FORCE it to succeed: if the gateway returns
+  ///      `ok:true` we take the URL; otherwise we fall back to the last
+  ///      cached URL so the user always ends up in gray on a OneLink tap.
+  Future<bool> _tryRouteFromOneLink() async {
+    if (!widget.attribution.hasDeepLink) return false;
+
+    // Tag the OneLink session regardless of which path we take below.
+    Insight.tag('gray_source', 'onelink');
+    final Map<String, dynamic> click = widget.attribution.deepLinkPayload;
+    final String? media = click['media_source']?.toString();
+    final String? campaign = click['campaign']?.toString();
+    if (media != null && media.isNotEmpty) Insight.tag('onelink_source', media);
+    if (campaign != null && campaign.isNotEmpty) {
+      Insight.tag('onelink_campaign', campaign);
+    }
+
+    // Strategy 1: OneLink embeds a real URL → use it directly.
+    final String? directUrl = widget.attribution.deepLinkTargetUrl();
+    if (directUrl != null && directUrl.isNotEmpty) {
+      await widget.depot.writeCachedDestination(directUrl);
+      await widget.depot.writePortalKind(PortalKind.web);
+      Insight.tag('run_mode', 'web');
+      Insight.event('route_web_onelink');
+      _bumpProgress(1.0);
+      await _settle();
+      _routeToGray(directUrl);
+      return true;
+    }
+
+    // Strategy 2: OneLink has no embedded URL — ask the gateway and
+    // force the result to be gray. If gateway succeeds, use its URL.
+    // If gateway fails, use the last cached URL (may be from a prior
+    // session). If nothing is cached, fall through to normal routing.
+    final GateVerdict verdict = await _askGateway();
+    if (verdict.granted && verdict.hasDestination) {
+      await widget.depot.writePortalKind(PortalKind.web);
+      Insight.tag('run_mode', 'web');
+      Insight.event('route_web_onelink');
+      _bumpProgress(1.0);
+      await _settle();
+      _routeToGray(verdict.destination!);
+      return true;
+    }
+    final String? cached = await widget.depot.readCachedDestination();
+    if (cached != null && cached.isNotEmpty) {
+      await widget.depot.writePortalKind(PortalKind.web);
+      Insight.tag('run_mode', 'web');
+      Insight.event('route_web_onelink_cached');
+      _bumpProgress(1.0);
+      await _settle();
+      _routeToGray(cached);
+      return true;
+    }
+
+    // No usable URL anywhere — let normal boot decide.
+    return false;
   }
 
   Future<GateVerdict> _askGateway() async {
@@ -190,6 +307,21 @@ class _PortalNavigatorState extends State<PortalNavigator>
     final Map<String, dynamic> body = await widget.attribution.assembleBody(
       locale: locale,
       pushToken: widget.beacon.token,
+    );
+    // Attribution + af_id are only known AFTER assembleBody — stitch the
+    // Clarity session to the AppsFlyer user id here so every subsequent
+    // event (route_*, screen_*, web_*) lands on the correct user in the
+    // dashboard. Empty af_id must NOT overwrite a good id (guarded in
+    // Insight.identify).
+    Insight.identify(
+      body['af_id']?.toString(),
+      tags: <String, String>{
+        'af_status': body['af_status']?.toString() ?? '',
+        'media_source': body['media_source']?.toString() ?? '',
+        'campaign': body['campaign']?.toString() ?? '',
+        'os': body['os']?.toString() ?? '',
+        'locale': body['locale']?.toString() ?? '',
+      },
     );
     return widget.gateway.query(body);
   }
@@ -257,6 +389,16 @@ class _PortalNavigatorState extends State<PortalNavigator>
         ),
       );
     } else {
+      // Returning user skipping the invite — classify notif state now so
+      // the `notif_permission` tag is never blank for these sessions.
+      // (BeaconInvite tags this itself when it IS shown; the two paths
+      // are mutually exclusive.)
+      final String state = widget.depot.isBeaconGranted()
+          ? 'granted'
+          : widget.depot.isBeaconOsBlocked()
+              ? 'os_denied'
+              : 'snoozed';
+      Insight.tag('notif_permission', state);
       Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(
           builder: (_) => ReaderStage(
@@ -273,6 +415,7 @@ class _PortalNavigatorState extends State<PortalNavigator>
   void _routeToNoSignal() {
     if (_committed || !mounted) return;
     _committed = true;
+    Insight.event('route_offline');
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
         builder: (_) => NoSignalStage(

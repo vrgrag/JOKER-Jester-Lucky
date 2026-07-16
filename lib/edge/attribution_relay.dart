@@ -55,8 +55,25 @@ class AttributionRelay {
 
     sdk.onInstallConversionData((dynamic raw) async {
       final Map<String, dynamic> payload = _flatten(raw);
-      final String? status = payload['af_status']?.toString();
-      if (status == 'Organic') {
+
+      // AppsFlyer GCD can fail with {"status":"failure","data":"Launch
+      // status code: 400"} when the dev key is not yet enabled for GCD
+      // or the device is not registered. Forward an empty payload in
+      // that case — leaking the error envelope into the gateway body
+      // causes the backend to read `status=failure` and reject the
+      // session, locking the user into native forever.
+      final String? sdkStatus = payload['status']?.toString();
+      if (sdkStatus == 'failure') {
+        if (kDebugMode) {
+          debugPrint('[AttributionRelay] GCD failure — ${payload['data']}; '
+              'forwarding empty install payload');
+        }
+        _finishInstall(<String, dynamic>{});
+        return;
+      }
+
+      final String? afStatus = payload['af_status']?.toString();
+      if (afStatus == 'Organic') {
         await Future<void>.delayed(
           Duration(seconds: JesterManifest.organicRecheckDelaySeconds),
         );
@@ -105,6 +122,49 @@ class AttributionRelay {
   Future<void> awaitDeepLink() {
     return _deepLinkGate.future
         .timeout(const Duration(seconds: 5), onTimeout: () {});
+  }
+
+  /// Whether an AppsFlyer OneLink click delivered a payload for this
+  /// session (independent of whether it carries a usable destination).
+  bool get hasDeepLink =>
+      _deepLinkPayload != null && _deepLinkPayload!.isNotEmpty;
+
+  /// Snapshot of the OneLink click event (media_source, campaign,
+  /// deep_link_value, custom params, …). Empty map if none arrived.
+  Map<String, dynamic> get deepLinkPayload =>
+      _deepLinkPayload == null
+          ? const <String, dynamic>{}
+          : Map<String, dynamic>.unmodifiable(_deepLinkPayload!);
+
+  /// Destination URL encoded inside the OneLink click event, if any.
+  ///
+  /// OneLinks configured for the gray flow put the partner URL under
+  /// one of the well-known keys below (order = priority). Anything that
+  /// does not start with `http`/`https` is treated as a token, not a
+  /// URL, and rejected so we never try to `loadRequest` on garbage.
+  String? deepLinkTargetUrl() {
+    final Map<String, dynamic>? p = _deepLinkPayload;
+    if (p == null || p.isEmpty) return null;
+    const List<String> keys = <String>[
+      'deep_link_value',
+      'af_dp',
+      'af_web_dp',
+      'url',
+      'target_url',
+      'dp',
+      'link',
+      'af_link',
+    ];
+    for (final String key in keys) {
+      final Object? raw = p[key];
+      if (raw is! String) continue;
+      final String v = raw.trim();
+      if (v.isEmpty) continue;
+      if (v.startsWith('http://') || v.startsWith('https://')) {
+        return v;
+      }
+    }
+    return null;
   }
 
   Future<String?> deviceUid() async {

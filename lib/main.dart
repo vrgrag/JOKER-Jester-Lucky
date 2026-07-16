@@ -1,3 +1,4 @@
+import 'package:clarity_flutter/clarity_flutter.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
@@ -9,6 +10,7 @@ import 'edge/attribution_relay.dart';
 import 'edge/beacon_hub.dart';
 import 'edge/depot.dart';
 import 'edge/gateway_relay.dart';
+import 'edge/insight.dart';
 import 'edge/link_probe.dart';
 import 'stage/portal_shell.dart';
 
@@ -69,11 +71,18 @@ Future<void> main() async {
   final GatewayRelay gateway = GatewayRelay(depot);
   final BeaconHub beacon = BeaconHub(depot);
 
-  runApp(PortalShell(
-    depot: depot,
-    linkProbe: linkProbe,
-    attribution: attribution,
-    gateway: gateway,
-    beacon: beacon,
+  // ClarityWidget must wrap the app root so session replay + custom
+  // events see every route in the tree. See
+  // .cursor/rules/clarity_analytics.mdc §1 (project id lives in
+  // pact/insight_env.dart, guarded facade in edge/insight.dart).
+  runApp(ClarityWidget(
+    clarityConfig: Insight.config,
+    app: PortalShell(
+      depot: depot,
+      linkProbe: linkProbe,
+      attribution: attribution,
+      gateway: gateway,
+      beacon: beacon,
+    ),
   ));
 }
